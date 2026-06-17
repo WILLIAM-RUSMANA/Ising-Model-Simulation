@@ -1,3 +1,5 @@
+import os
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -7,6 +9,10 @@ from rg import IsingRG, renormalize
 # ============================================
 # Time-Dependent Ginzburg-Landau Simulation
 # ============================================
+
+# Folder where live field snapshots are saved for the Streamlit RG app to read
+SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rg_snapshots")
+os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
 # Grid size
 N = 128
@@ -24,6 +30,7 @@ noise_intensity = 0.02  # Baseline strength of thermal fluctuations
 dt = 0.01
 sim_speed_multiplier = 1  # Default math loops per frame step
 is_paused = False         # Pause state flag
+snapshot_flash_frames = 0 # Countdown for the "Saved!" button label
 
 # Initialize magnetization field with small fluctuations
 m = 0.1 * np.random.randn(N, N)
@@ -109,11 +116,13 @@ ax_b1 = fig_sim.add_axes([0.15, 0.05, 0.13, 0.04])
 ax_b2 = fig_sim.add_axes([0.31, 0.05, 0.13, 0.04])
 ax_b3 = fig_sim.add_axes([0.47, 0.05, 0.13, 0.04])
 ax_bp = fig_sim.add_axes([0.68, 0.05, 0.17, 0.04]) # Pause button
+ax_bsnap = fig_sim.add_axes([0.15, 0.005, 0.70, 0.035]) # Snapshot button
 
 btn_1x = Button(ax_b1, '1x Speed', color='gainsboro', hovercolor='lightgray')
 btn_2x = Button(ax_b2, '2x Speed', color='gainsboro', hovercolor='lightgray')
 btn_5x = Button(ax_b3, '5x Speed', color='gainsboro', hovercolor='lightgray')
 btn_pause = Button(ax_bp, 'Pause', color='gainsboro', hovercolor='lightgray')
+btn_snap = Button(ax_bsnap, 'Snapshot for RG', color='lightyellow', hovercolor='khaki')
 
 def set_speed_1x(event): global sim_speed_multiplier; sim_speed_multiplier = 1
 def set_speed_2x(event): global sim_speed_multiplier; sim_speed_multiplier = 2
@@ -130,10 +139,25 @@ def toggle_pause(event):
         btn_pause.color = 'gainsboro'
     fig_sim.canvas.draw_idle()
 
+def save_snapshot(event):
+    global snapshot_flash_frames
+    t = slider_temp.val
+    now = time.time()
+    # Filename starts with a sortable timestamp; T/frame are just for browsing
+    stamp = time.strftime('%Y%m%d_%H%M%S', time.localtime(now))
+    ms = int(now * 1000) % 1000
+    fname = f"{stamp}_{ms:03d}_T{t:.0f}K_f{frame_count}.npz"
+    np.savez(os.path.join(SNAPSHOT_DIR, fname), field=m, temperature=t,
+             frame_count=frame_count, timestamp=now)
+    btn_snap.label.set_text('Saved!')
+    snapshot_flash_frames = 40  # ~0.8s at 20ms/frame before reverting
+    fig_sim.canvas.draw_idle()
+
 btn_1x.on_clicked(set_speed_1x)
 btn_2x.on_clicked(set_speed_2x)
 btn_5x.on_clicked(set_speed_5x)
 btn_pause.on_clicked(toggle_pause)
+btn_snap.on_clicked(save_snapshot)
 
 # --------------------------------------------
 # Renormalization Group Coarse-Graining 
@@ -154,8 +178,13 @@ def rg_flow(field, levels=5):
 # Time Evolution Animation Loop
 # --------------------------------------------
 def update(_):
-    global m, frame_count
-    
+    global m, frame_count, snapshot_flash_frames
+
+    if snapshot_flash_frames > 0:
+        snapshot_flash_frames -= 1
+        if snapshot_flash_frames == 0:
+            btn_snap.label.set_text('Snapshot for RG')
+
     t = slider_temp.val
     phase = "Ferromagnetic (Ordered)" if t < Tc else "Paramagnetic (Disordered)"
     

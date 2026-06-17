@@ -116,6 +116,89 @@ def renormalize(field):
 
 
 # =============================================
+# TDGL Snapshot Real-Space RG Analysis (Option 1)
+# Coarse-grain a field snapshot captured live from
+# main.py and watch the statistics flow.
+# =============================================
+
+# Curie temperature of iron (K), matches main.py
+TC = 1043.15
+
+
+# Ensemble-averaged radial structure factor S(|k|)
+def structure_factor(fields):
+    N = fields[0].shape[0]
+    power = np.zeros((N, N))
+    for f in fields:
+        fc = f - np.mean(f)                       # drop the k=0 mean
+        power += np.abs(np.fft.fft2(fc)) ** 2     # accumulate power spectrum
+    power /= len(fields) * N * N                  # ensemble + normalisation
+
+    # Radial wavenumber grid
+    k1d = 2.0 * np.pi * np.fft.fftfreq(N)         # wavenumbers per axis
+    KX, KY = np.meshgrid(k1d, k1d)
+    Kmag = np.sqrt(KX ** 2 + KY ** 2).ravel()
+
+    # Bin the power into radial shells
+    order = np.argsort(Kmag)
+    k_sorted = Kmag[order]
+    S_sorted = power.ravel()[order]
+    nbins = N // 2
+    edges = np.linspace(0, k_sorted.max(), nbins + 1)
+    idx = np.digitize(k_sorted, edges)
+    k_centers, S_radial = [], []
+    for shell in range(1, nbins + 1):
+        sel = idx == shell
+        if np.any(sel):
+            k_centers.append(k_sorted[sel].mean())
+            S_radial.append(S_sorted[sel].mean())
+    return np.array(k_centers), np.array(S_radial)
+
+
+# Effective GL mass r and correlation length xi from S(k)
+def effective_r_xi(fields):
+    N = fields[0].shape[0]
+    if N < 16:                                    # too few k-modes to fit
+        return np.nan, np.nan
+    k, S = structure_factor(fields)
+    good = (k > 0) & (S > 0)
+    k, S = k[good], S[good]
+    if len(k) < 4:
+        return np.nan, np.nan
+
+    # Ornstein-Zernike: 1/S = (r + kappa*k^2)/C, linear in k^2
+    n = max(4, len(k) // 4)                       # lowest-k portion only
+    slope, intercept = np.polyfit(k[:n] ** 2, 1.0 / S[:n], 1)
+    r_eff = intercept                             # inverse susceptibility (~ r)
+    xi = np.sqrt(slope / intercept) if (slope > 0 and intercept > 0) else np.nan
+    return r_eff, xi
+
+
+# Coarse-grain a pre-built ensemble of fields and record the flow
+def rg_field_flow_from_fields(fields, levels=5):
+    fields = list(fields)
+    snapshots = []      # one representative field per level
+    records = []        # observables per level
+    for _ in range(levels):
+        size = fields[0].shape[0]
+        r_eff, xi = effective_r_xi(fields)
+        records.append({
+            "size": size,                                          # lattice size
+            "net_m": np.mean([f.mean() for f in fields]),          # net magnetization
+            "order": np.mean([np.abs(f).mean() for f in fields]),  # local order |m|
+            "var": np.mean([f.var() for f in fields]),             # field variance
+            "r_eff": r_eff,                                        # effective GL mass
+            "xi_over_L": xi / size if np.isfinite(xi) else np.nan, # corr length / L
+        })
+        snapshots.append(fields[0].copy())
+        if size <= 4:                              # stop at the smallest block
+            break
+        fields = [renormalize(f) for f in fields]  # one RG step on every sample
+
+    return records, snapshots
+
+
+# =============================================
 # Testing
 # =============================================
 if __name__ == "__main__":
